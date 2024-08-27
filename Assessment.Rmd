@@ -1,0 +1,205 @@
+---
+title: "SARB: Technical Data Assessment"
+author: "Santino Del Fava"
+date: "2024-08-27"
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE}
+
+# Clear Environment
+rm(list=ls())
+
+# Install packages
+library(tidyverse)
+library(ggplot2)
+library(zoo)
+library(stargazer)
+library(forecast)
+library(randomForestSRC)
+library(grid)
+library(gridExtra)
+
+```
+
+# Part 1: Data Loading and Exploratory Data Analysis
+
+I begin by importing the data and assessing the structure of the dataset:
+
+```{r}
+
+data <- read.csv("data.csv")
+str(data)
+
+```
+
+```{r}
+
+summary_stats <- summary(data[, -1])  # Remove the Data column when performing summary statistics
+print(summary_stats)
+
+```
+
+The dataset has 121 observations. Notably: the "Date" column is of the character class, all of our variables have a NA missing value, and all of our variables have an extreme outlier present as the maximum value. To address these issues, I will: 1) convert the "Date" column to the date class, 2) I will replace all missing NA values with the previous observed observation (last observation carried forward), and 3) I will, similarly, replace all the extreme outliers with the previous observed observation. 
+
+```{r}
+
+# Convert "Date" column to date class:
+data$Date <- as.Date(data$Date, format = "%Y-%m-%d")
+
+# Replace all NA values with the previous observed observation:
+data <- na.locf(data)
+
+# Replace all outliers with the previous observed observation:
+data$GDP[51] <- data$GDP[51-1]
+data$GFCF[71] <- data$GFCF[71-1]
+data$UNEM[107] <- data$UNEM[107-1]
+data$ConsumerPrices[87] <- data$ConsumerPrices[87-1]
+data$GovExp[118] <- data$GovExp[118-1]
+data$HouseExp[91] <- data$HouseExp[91-1]
+
+```
+
+Let's review the summary statistics:
+
+```{r}
+
+summary_stats <- summary(data[, -1])
+print(summary_stats)
+
+```
+
+With the data cleaned, I will now graphically explore each variable via line plots:
+
+```{r}
+
+g1 <- ggplot(data,
+      aes(y = GDP, x = Date)) + 
+      geom_line ()
+
+g2 <- ggplot(data,
+      aes(y = GFCF, x = Date)) + 
+      geom_line ()
+
+g3 <- ggplot(data,
+      aes(y = UNEM, x = Date)) + 
+      geom_line ()
+
+g4 <- ggplot(data,
+      aes(y = ConsumerPrices, x = Date)) + 
+      geom_line ()
+
+g5 <- ggplot(data,
+      aes(y = GovExp, x = Date)) + 
+      geom_line ()
+
+g6 <- ggplot(data,
+      aes(y = HouseExp, x = Date)) + 
+      geom_line ()
+
+grid.arrange(g1, g2, g3, g4, g5, g6, nrow = 2, ncol = 3) #from the "grid" package, this function places all 6 line graphs in a single plot space
+
+```
+
+The above plots show us that GDP and Household expenditure have consistently been rising over time - however, the 2020 pandemic saw these varibale experience a sharp decline. Gross Fixed Capital Formation has been rather constant since 2010, and has seen slight declines in recent years. Unemployment and consumer prices have also been on the rise over the past 20 years.    
+
+# Part 2: Model Training and Evaluation
+
+The task now is to predict GDP. My approach will be to focus on the expenditure approach to calculating GDP. Based on the available data, I will employ the following variables: *GFCF* (Gross fixed capital formation (sa)), *GovExp* (Final consumption expenditure by general government (sa), and *HouseExp* (Final consumption expenditure by household (sa)) to predict *GDP* (GDP at market prices (constant, sa)). 
+
+Notably, I want to compare whether linear regression methods (such as OLS) outperform non-linear regression methods (such as random forests regression). 
+
+I will do this exercise by splitting my data into a training (80% of original data) and a test set (20% of original data). I will train the respective models on the training data, and use these models to forecast the GDP figures for the time spanned by the test data. To assess accuracy, I will compare the Root Mean Square Errors (RMSE) of either model (where error = actual GDP - forecasted GDP)
+
+```{r}
+
+split_index <- floor(0.8*nrow(data)) # the floor function rounds the proceeding figure down the the nearest whole number. "Split index" calculates the row number that contains 80% of the data within the dataset
+
+# The training data is the first 80% of the dataset
+train_data <- data[1:split_index, ]
+
+# The test data is the remaining 20% of the dataset
+test_data <- data[(split_index + 1):nrow(data), ]
+
+```
+
+Let us begin with the OLS model:
+
+```{r, warning=FALSE}
+
+ols_model <- lm(data = train_data, GDP ~ GFCF + GovExp + HouseExp)
+
+```
+
+```{r}
+
+forecast_ols <- predict(ols_model, newdata=test_data) #use the above OLS model to predict/forecast GDP given the test data as the new/unseen input data
+
+rmse <- sqrt(mean((test_data$GDP - forecast_ols)^2)) # Root Mean Square Error calculation
+print(rmse)
+
+```
+
+Next, I do the random forest regression model:
+
+```{r, warning=FALSE}
+
+set.seed(42) #ensure reproducibility by setting a fixed seed (given the random sampling aspect of this method)
+
+rf_model <- rfsrc(data = train_data, GDP ~ GFCF + GovExp + HouseExp)
+
+```
+
+```{r}
+
+forecast_rf <- predict(rf_model, newdata=test_data)$predicted #use the above Random Forest model to predict/forecast GDP given the test data as the new/unseen input data
+
+rmse <- sqrt(mean((test_data$GDP - forecast_rf)^2))
+print(rmse)
+
+```
+Given that the linear OLS model has a _lower_ RMSE value than that of the non-linear method random forest method, I tentatively conclude that the linear model has greater forecast strength/accuracy at predicting future GDP. 
+
+For interest, we can also visualzie these predictions by creating a plot that compares the two forecasts:
+
+```{r}
+
+# My approach is to create a single dataset with all the relevant data: 
+
+test_data$OLS_Predicted_GDP <- forecast_ols #create new column for forecasted GDP values from the OLS model in the TEST dataframe
+
+test_data$RF_Predicted_GDP <- forecast_rf #create new column for forecasted GDP values from the Random Forests model in the TEST dataframe
+
+train_data$OLS_Predicted_GDP <- NA #to accomodate the rbind function, I create new column for forecasted GDP values from the OLS model in the TRAIN dataframe
+
+
+train_data$RF_Predicted_GDP <- NA ##to accomodate the rbind function, I create new column for forecasted GDP values from the random forests model in the TRAIN dataframe
+
+recreated_data <- rbind(train_data, test_data)
+
+```
+
+```{r, warning=FALSE}
+
+ggplot(recreated_data, aes(x = Date, y = GDP)) +
+  geom_line(colour = "black") +  #the original GDP
+  
+  geom_line(data = recreated_data, aes(x = Date, y = OLS_Predicted_GDP, colour = "OLS_Predicted_GDP")) + # the OLS model predicted GDP
+  
+  geom_line(data = recreated_data, aes(x = Date, y = RF_Predicted_GDP, color = "RF_Predicted_GDP")) + #the Random Forest predicted GDP
+  
+  scale_colour_manual("", values = c("OLS_Predicted_GDP" = "red", "RF_Predicted_GDP" = "blue")) + #create a legend to indicate the different lines/forecasting models
+  
+  labs(title = "GDP: Actual vs Forecasted",
+       x = "Date",
+       y = "GDP") +
+  
+  theme(plot.title=element_text(family="Times", hjust = 0.5, color = "black",
+                                face="bold", size=15))
+  
+```
+
+The above graph indicates that the random forest method significantly underestimates the actual GDP, and that the OLS method slightly overestimates actual GDP. 
+
+**END**
+  
